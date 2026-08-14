@@ -33,6 +33,8 @@ namespace stream {
     int audioQosType;
     int videoQosType;
 
+    bool enableMic;
+
     uint32_t encryptionFlagsEnabled;
 
     std::optional<int> gcmap;

@@ -525,6 +525,9 @@ namespace config {
     true,  // install_steam_drivers
     true, // keep_sink_default
     true, // auto_capture
+    false,  // enable_mic
+    {},  // mic_sink
+    true,  // install_mic_driver
   };
 
   stream_t stream {
@@ -1231,6 +1234,9 @@ namespace config {
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "keep_sink_default", audio.keep_default);
     bool_f(vars, "auto_capture_sink", audio.auto_capture);
+    bool_f(vars, "enable_mic", audio.enable_mic);
+    string_f(vars, "mic_sink", audio.mic_sink);
+    bool_f(vars, "install_mic_driver", audio.install_mic_driver);
 
     string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
 

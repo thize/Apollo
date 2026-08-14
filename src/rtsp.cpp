@@ -1002,6 +1002,7 @@ namespace rtsp_stream {
       config.packetsize = util::from_view(args.at("x-nv-video[0].packetSize"sv));
       config.minRequiredFecPackets = util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
       config.mlFeatureFlags = util::from_view(args.at("x-ml-general.featureFlags"sv));
+      config.enableMic = (config.mlFeatureFlags & ML_FF_MICROPHONE) != 0;
       config.audioQosType = util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
       config.videoQosType = util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
       config.encryptionFlagsEnabled = util::from_view(args.at("x-ss-general.encryptionEnabled"sv));

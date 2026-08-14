@@ -158,6 +158,9 @@ namespace config {
     bool install_steam_drivers;
     bool keep_default;
     bool auto_capture;
+    bool enable_mic;
+    std::string mic_sink;
+    bool install_mic_driver;
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it

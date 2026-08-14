@@ -97,6 +97,30 @@ const validateFallbackMode = (event) => {
                   v-model="config.auto_capture_sink"
                   default="true"
         ></Checkbox>
+
+        <!-- Microphone Passthrough -->
+        <Checkbox class="mb-3"
+                  id="enable_mic"
+                  locale-prefix="config"
+                  v-model="config.enable_mic"
+                  default="false"
+        ></Checkbox>
+
+        <!-- Microphone Sink -->
+        <div class="mb-3">
+          <label for="mic_sink" class="form-label">{{ $t('config.mic_sink') }}</label>
+          <input type="text" class="form-control" id="mic_sink" :placeholder="$t('config.mic_sink_placeholder')"
+                 v-model="config.mic_sink" />
+          <div class="form-text pre-wrap">{{ $t('config.mic_sink_desc') }}</div>
+        </div>
+
+        <!-- Install Virtual Microphone Driver -->
+        <Checkbox class="mb-3"
+                  id="install_mic_driver"
+                  locale-prefix="config"
+                  v-model="config.install_mic_driver"
+                  default="true"
+        ></Checkbox>
       </template>
     </PlatformLayout>
 

@@ -1007,6 +1007,7 @@ namespace confighttp {
     output_tree["version"] = PROJECT_VERSION;
 #ifdef _WIN32
     output_tree["vdisplayStatus"] = (int)proc::vDisplayDriverStatus;
+    output_tree["micDriverStatus"] = (int)platf::mic_driver_status.load();
 #endif
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
     for (auto &[name, value] : vars) {

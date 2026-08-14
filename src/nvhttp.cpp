@@ -21,6 +21,7 @@
 #include <Simple-Web-Server/server_http.hpp>
 
 // local includes
+#include "audio.h"
 #include "config.h"
 #include "display_device.h"
 #include "file_handler.h"
@@ -939,6 +940,11 @@ namespace nvhttp {
         tree.put("root.VirtualDisplayDriverReady", true);
       }
     #endif
+
+      // Microphone passthrough is only usable when it's enabled and a virtual
+      // microphone was found, which is exactly what DESCRIBE advertises later on.
+      tree.put("root.MicrophoneCapable", audio::is_mic_enabled() ? 1 : 0);
+      tree.put("root.MicrophoneDriverReady", audio::is_mic_driver_ready() ? 1 : 0);
     } else {
       tree.put("root.mac", "00:00:00:00:00:00");
       tree.put("root.Permission", "0");

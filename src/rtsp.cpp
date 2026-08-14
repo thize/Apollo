@@ -790,6 +790,11 @@ namespace rtsp_stream {
     // Tell the client about our supported features
     ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
 
+    // Only let the client capture its microphone when we have somewhere to play it back
+    if (audio::is_mic_available()) {
+      ss << "a=x-ss-general.micSupport:1"sv << std::endl;
+    }
+
     // Always request new control stream encryption if the client supports it
     uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
     uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;

@@ -14,6 +14,7 @@ const props = defineProps([
   'platform',
   'config',
   'vdisplay',
+  'micDriver',
   'min_fps_factor',
 ])
 
@@ -26,6 +27,16 @@ const sudovdaStatus = {
 }
 
 const currentDriverStatus = computed(() => sudovdaStatus[props.vdisplay])
+
+const micDriverStatus = {
+  '0': 'mic_driver_status_0',
+  '1': 'mic_driver_status_1',
+  '2': 'mic_driver_status_2'
+}
+
+const micDriverReady = computed(() => String(props.micDriver) === '2')
+
+const currentMicDriverStatus = computed(() => $t('config.' + micDriverStatus[props.micDriver]))
 
 const config = ref(props.config)
 
@@ -121,6 +132,12 @@ const validateFallbackMode = (event) => {
                   v-model="config.install_mic_driver"
                   default="true"
         ></Checkbox>
+
+        <!-- Virtual Microphone Driver Status -->
+        <div class="alert" :class="[micDriverReady ? 'alert-success' : 'alert-warning']">
+          <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.mic_driver_status') }}: {{ currentMicDriverStatus }}
+        </div>
+        <div class="form-text" v-if="!micDriverReady">{{ $t('config.mic_driver_status_desc') }}</div>
       </template>
     </PlatformLayout>
 

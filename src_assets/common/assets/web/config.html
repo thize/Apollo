@@ -56,6 +56,7 @@
         :config="config"
         :platform="platform"
         :vdisplay="vdisplayStatus"
+        :mic-driver="micDriverStatus"
       >
       </audio-video>
 
@@ -137,6 +138,7 @@
         config: null,
         currentTab: "general",
         vdisplayStatus: "1",
+        micDriverStatus: "0",
         global_prep_cmd: [],
         global_state_cmd: [],
         server_cmd: [],
@@ -363,6 +365,9 @@
 
           this.vdisplayStatus = this.config.vdisplayStatus;
           delete this.config.vdisplayStatus;
+
+          this.micDriverStatus = this.config.micDriverStatus;
+          delete this.config.micDriverStatus;
 
           fallbackDisplayModeCache = this.config.fallback_mode || "";
 

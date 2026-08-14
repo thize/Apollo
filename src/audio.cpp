@@ -3,6 +3,7 @@
  * @brief Definitions for audio capture and encoding.
  */
 // standard includes
+#include <chrono>
 #include <thread>
 
 // lib includes
@@ -17,9 +18,15 @@
 #include "thread_safe.h"
 #include "utility.h"
 
+#ifdef _WIN32
+  // The virtual microphone is driven through WASAPI, see mic_passthrough()
+  #include <objbase.h>
+#endif
+
 namespace audio {
   using namespace std::literals;
   using opus_t = util::safe_ptr<OpusMSEncoder, opus_multistream_encoder_destroy>;
+  using opus_decoder_t = util::safe_ptr<OpusDecoder, opus_decoder_destroy>;
   using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
 
   static int start_audio_control(audio_ctx_t &ctx);
@@ -29,6 +36,15 @@ namespace audio {
   int map_stream(int channels, bool quality);
 
   constexpr auto SAMPLE_RATE = 48000;
+
+  // Microphone audio is always sent as 10 ms frames of mono 48 kHz Opus
+  constexpr auto MIC_SAMPLE_RATE = 48000;
+  constexpr auto MIC_CHANNELS = 1;
+  constexpr auto MIC_FRAME_DURATION = 10ms;
+  constexpr auto MIC_FRAME_SIZE = MIC_SAMPLE_RATE / 100;
+
+  // The largest frame Opus can produce at 48 kHz is 120 ms long
+  constexpr auto MIC_MAX_FRAME_SIZE = 5760;
 
   // NOTE: If you adjust the bitrates listed here, make sure to update the
   // corresponding bitrate adjustment logic in rtsp_stream::cmd_announce()
@@ -250,6 +266,197 @@ namespace audio {
     }
   }
 
+  void mic_jitter_buffer_t::push(std::uint32_t sequence_number, std::vector<std::uint8_t> data) {
+    // A frame whose turn has already passed is of no use to us anymore
+    if (_primed && (std::int32_t) (sequence_number - _next_sequence_number) < 0) {
+      return;
+    }
+
+    _frames.insert_or_assign(sequence_number, std::move(data));
+
+    // The client is producing frames faster than we play them back. Drop the oldest ones
+    // rather than letting the latency grow, and resume playback from what's left.
+    if (_frames.size() > max_frames) {
+      do {
+        _frames.erase(std::begin(_frames));
+      } while (_frames.size() > max_frames);
+
+      _next_sequence_number = std::begin(_frames)->first;
+    }
+  }
+
+  mic_jitter_buffer_t::action_e mic_jitter_buffer_t::pop(std::vector<std::uint8_t> &data) {
+    if (!_primed) {
+      if (_frames.size() < prefill_frames) {
+        return action_e::underrun;
+      }
+
+      _primed = true;
+      _next_sequence_number = std::begin(_frames)->first;
+    }
+
+    // Concealment only makes sense for the odd lost frame. Once the client has run
+    // further ahead than the buffer is deep, skip to what we actually have.
+    if (!_frames.empty() && (std::int32_t) (std::begin(_frames)->first - _next_sequence_number) > (std::int32_t) max_frames) {
+      _next_sequence_number = std::begin(_frames)->first;
+    }
+
+    auto frame = _frames.find(_next_sequence_number);
+    if (frame != std::end(_frames)) {
+      data = std::move(frame->second);
+      _frames.erase(frame);
+
+      ++_next_sequence_number;
+      return action_e::play;
+    }
+
+    // Enough later frames have arrived to consider this one lost for good
+    if (_frames.size() >= conceal_frames) {
+      ++_next_sequence_number;
+      return action_e::conceal;
+    }
+
+    _primed = false;
+    return action_e::underrun;
+  }
+
+  void mic_jitter_buffer_t::reset() {
+    _frames.clear();
+    _primed = false;
+  }
+
+  void mic_passthrough(safe::mail_t mail) {
+    auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto packets = mail->queue<mic_packet_t>(mail::mic_packets);
+
+    // Once we're gone there is nobody left to drain the queue
+    auto packets_fg = util::fail_guard([&packets]() {
+      packets->stop();
+    });
+
+#ifdef _WIN32
+    // The virtual microphone is a WASAPI endpoint, so this thread has to join an apartment
+    // before it may touch the sink or the device enumerator it was created from.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY);
+    auto co_uninit_fg = util::fail_guard([]() {
+      CoUninitialize();
+    });
+#endif
+
+    auto ref = get_audio_ctx_ref();
+    if (!ref) {
+      return;
+    }
+
+    // Reuse the control interface of the audio context. Creating another one is not free of
+    // side effects: on Windows it installs the Steam audio drivers.
+    auto &control = ref->control;
+    if (!control) {
+      return;
+    }
+
+    // Only the first session to get here may write to the virtual microphone. Mixing
+    // several clients into a single capture device is not something we can do sensibly.
+    if (ref->mic_flag->exchange(true, std::memory_order_acquire)) {
+      BOOST_LOG(info) << "Another session is already using the virtual microphone"sv;
+      return;
+    }
+
+    auto mic_flag_fg = util::fail_guard([&ref]() {
+      ref->mic_flag->store(false, std::memory_order_release);
+    });
+
+    auto sink = control->mic_sink(MIC_SAMPLE_RATE, MIC_CHANNELS);
+    if (!sink) {
+      BOOST_LOG(error) << "Unable to open the virtual microphone. The client's microphone will not be audible."sv;
+      return;
+    }
+
+    int err;
+    opus_decoder_t opus {opus_decoder_create(MIC_SAMPLE_RATE, MIC_CHANNELS, &err)};
+    if (!opus) {
+      BOOST_LOG(error) << "Couldn't create the microphone decoder: "sv << opus_strerror(err);
+      return;
+    }
+
+    BOOST_LOG(info) << "Microphone passthrough initialized: "sv << MIC_SAMPLE_RATE / 1000 << " kHz, "sv
+                    << MIC_CHANNELS << " channel, "sv << MIC_FRAME_DURATION.count() << " ms frames"sv;
+
+    // Playback takes place on this thread
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
+
+    mic_jitter_buffer_t jitter;
+    std::vector<std::uint8_t> frame;
+    std::vector<float> samples(MIC_MAX_FRAME_SIZE * MIC_CHANNELS);
+
+    auto next_frame = std::chrono::steady_clock::now();
+    while (!shutdown_event->peek()) {
+      // Take in everything that arrived while we were waiting for this frame to come due
+      while (packets->peek()) {
+        auto packet = packets->pop();
+        if (!packet) {
+          break;
+        }
+
+        jitter.push(packet->sequenceNumber, std::move(packet->data));
+      }
+
+      int decoded = 0;
+      switch (jitter.pop(frame)) {
+        case mic_jitter_buffer_t::action_e::play:
+          decoded = opus_decode_float(opus.get(), frame.data(), (opus_int32) frame.size(), samples.data(), MIC_MAX_FRAME_SIZE, 0);
+          break;
+        case mic_jitter_buffer_t::action_e::conceal:
+          // The frame never made it, so let Opus interpolate over the gap
+          decoded = opus_decode_float(opus.get(), nullptr, 0, samples.data(), MIC_FRAME_SIZE, 0);
+          break;
+        case mic_jitter_buffer_t::action_e::underrun:
+          // There's nothing to play back yet, the buffer is still filling up
+          break;
+      }
+
+      if (decoded < 0) {
+        BOOST_LOG(error) << "Couldn't decode microphone audio: "sv << opus_strerror(decoded);
+        decoded = 0;
+      }
+
+      // Keeping the endpoint fed with silence is cheaper than letting it starve
+      auto written = decoded > 0 ? sink->write(samples.data(), decoded) : sink->write(nullptr, MIC_FRAME_SIZE);
+      if (written < 0) {
+        BOOST_LOG(warning) << "Reinitializing the virtual microphone"sv;
+
+        sink.reset();
+        jitter.reset();
+
+        do {
+          sink = control->mic_sink(MIC_SAMPLE_RATE, MIC_CHANNELS);
+          if (!sink) {
+            BOOST_LOG(warning) << "Couldn't re-initialize the virtual microphone"sv;
+          }
+        } while (!sink && !shutdown_event->view(5s));
+
+        if (!sink) {
+          return;
+        }
+
+        next_frame = std::chrono::steady_clock::now();
+      }
+
+      // Playback is paced by our own clock. Whatever drift there is against the client's
+      // capture clock shows up as the depth of the jitter buffer, which drops frames when
+      // it grows too deep and inserts silence when it runs dry.
+      next_frame += MIC_FRAME_DURATION;
+
+      auto now = std::chrono::steady_clock::now();
+      if (next_frame < now) {
+        // We fell behind, don't try to make up for it in one burst
+        next_frame = now;
+      }
+
+      std::this_thread::sleep_until(next_frame);
+    }
+  }
+
   audio_ctx_ref_t get_audio_ctx_ref() {
     static auto control_shared {safe::make_shared<audio_ctx_t>(start_audio_control, stop_audio_control)};
     return control_shared.ref();
@@ -287,6 +494,7 @@ namespace audio {
     });
 
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
+    ctx.mic_flag = std::make_unique<std::atomic_bool>(false);
 
     // The default sink has not been replaced yet.
     ctx.restore_sink = false;

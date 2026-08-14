@@ -40,6 +40,118 @@ INSTANTIATE_TEST_SUITE_P(
   }
 );
 
+struct MicJitterBufferTest: testing::Test {
+  /**
+   * @brief Build a frame whose payload identifies the sequence number it belongs to.
+   */
+  static std::vector<std::uint8_t> frame_of(std::uint32_t sequence_number) {
+    return {(std::uint8_t) sequence_number};
+  }
+
+  /**
+   * @brief Fill the buffer up to the point where it starts playing back.
+   */
+  void prefill(std::uint32_t first_sequence_number = 0) {
+    for (std::uint32_t i = 0; i < mic_jitter_buffer_t::prefill_frames; ++i) {
+      m_buffer.push(first_sequence_number + i, frame_of(first_sequence_number + i));
+    }
+  }
+
+  mic_jitter_buffer_t m_buffer;
+  std::vector<std::uint8_t> m_frame;
+};
+
+TEST_F(MicJitterBufferTest, UnderrunsUntilPrefilled) {
+  for (std::uint32_t i = 0; i < mic_jitter_buffer_t::prefill_frames; ++i) {
+    ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::underrun);
+    m_buffer.push(i, frame_of(i));
+  }
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(0));
+}
+
+TEST_F(MicJitterBufferTest, ReordersFrames) {
+  m_buffer.push(2, frame_of(2));
+  m_buffer.push(0, frame_of(0));
+  m_buffer.push(1, frame_of(1));
+
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+    ASSERT_EQ(m_frame, frame_of(i));
+  }
+}
+
+TEST_F(MicJitterBufferTest, ConcealsLostFrame) {
+  m_buffer.push(0, frame_of(0));
+  m_buffer.push(2, frame_of(2));
+  m_buffer.push(3, frame_of(3));
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(0));
+
+  // Sequence number 1 never arrived, but the ones after it did
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::conceal);
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(2));
+}
+
+TEST_F(MicJitterBufferTest, DropsOldestFramesWhenOverfilled) {
+  constexpr std::uint32_t overfill = 2;
+
+  for (std::uint32_t i = 0; i < mic_jitter_buffer_t::max_frames + overfill; ++i) {
+    m_buffer.push(i, frame_of(i));
+  }
+
+  ASSERT_EQ(m_buffer.depth(), mic_jitter_buffer_t::max_frames);
+
+  // The frames that were dropped to bound the latency are not concealed
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(overfill));
+}
+
+TEST_F(MicJitterBufferTest, RefillsAfterRunningDry) {
+  prefill();
+
+  for (std::uint32_t i = 0; i < mic_jitter_buffer_t::prefill_frames; ++i) {
+    ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  }
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::underrun);
+
+  // Playback only resumes once the buffer has been filled up again
+  prefill(mic_jitter_buffer_t::prefill_frames);
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(mic_jitter_buffer_t::prefill_frames));
+}
+
+TEST_F(MicJitterBufferTest, IgnoresFramesThatArriveTooLate) {
+  prefill();
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+
+  auto depth = m_buffer.depth();
+  m_buffer.push(0, frame_of(0));
+  ASSERT_EQ(m_buffer.depth(), depth);
+}
+
+TEST_F(MicJitterBufferTest, ResyncsInsteadOfConcealingABurst) {
+  constexpr std::uint32_t resumed_at = 100;
+
+  prefill();
+  for (std::uint32_t i = 0; i < mic_jitter_buffer_t::prefill_frames; ++i) {
+    ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  }
+
+  // Nothing arrived for a while, so the gap is far too wide to conceal
+  m_buffer.push(resumed_at, frame_of(resumed_at));
+
+  ASSERT_EQ(m_buffer.pop(m_frame), mic_jitter_buffer_t::action_e::play);
+  ASSERT_EQ(m_frame, frame_of(resumed_at));
+}
+
 TEST_P(AudioTest, TestEncode) {
   std::thread timer([&] {
     // Terminate the audio capture after 100 ms

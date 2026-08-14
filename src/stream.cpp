@@ -53,6 +53,7 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_MIC_DATA 19
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -74,6 +75,7 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x3003,  // Microphone data (Apollo protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -299,7 +301,24 @@ namespace stream {
      */
     void call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected);
 
+    /**
+     * @brief Register a handler for a control stream message type.
+     * @param type The message type.
+     * @param cb The handler.
+     */
     void map(uint16_t type, std::function<void(session_t *, const std::string_view &)> cb) {
+      _map_type_cb.emplace(type, [cb = std::move(cb)](session_t *session, const std::string_view &payload, bool) {
+        cb(session, payload);
+      });
+    }
+
+    /**
+     * @brief Register a handler that needs to know how the message reached us.
+     * @param type The message type.
+     * @param cb The handler. Its `reinjected` argument is `true` when the message arrived
+     *           encrypted and is being reprocessed after decryption.
+     */
+    void map(uint16_t type, std::function<void(session_t *, const std::string_view &, bool)> cb) {
       _map_type_cb.emplace(type, std::move(cb));
     }
 
@@ -319,7 +338,7 @@ namespace stream {
     }
 
     // Callbacks
-    std::unordered_map<std::uint16_t, std::function<void(session_t *, const std::string_view &)>> _map_type_cb;
+    std::unordered_map<std::uint16_t, std::function<void(session_t *, const std::string_view &, bool)>> _map_type_cb;
 
     // All active sessions (including those still waiting for a peer to connect)
     sync_util::sync_t<std::vector<session_t *>> _sessions;
@@ -356,6 +375,10 @@ namespace stream {
 
     std::thread audioThread;
     std::thread videoThread;
+
+    // Only started for sessions that negotiated microphone passthrough
+    std::thread micThread;
+    audio::mic_queue_t mic_packets;
 
     std::chrono::steady_clock::time_point pingTimeout;
 
@@ -569,7 +592,7 @@ namespace stream {
         << util::hex_vec(payload) << std::endl
         << "---end data---"sv;
     } else {
-      cb->second(session, payload);
+      cb->second(session, payload, reinjected);
     }
   }
 
@@ -1050,6 +1073,34 @@ namespace stream {
         BOOST_LOG(debug) << "Permission File Upload deined for [" << session->device_name << "]";
         return;
       }
+    });
+
+    server->map(packetTypes[IDX_MIC_DATA], [](session_t *session, const std::string_view &payload, bool reinjected) {
+      BOOST_LOG(verbose) << "type [IDX_MIC_DATA]"sv;
+
+      // Microphone data is a live feed of whatever is being said next to the client, so it
+      // must never be accepted off the wire in the clear once the session has negotiated the
+      // encrypted control stream. control_server_t::call() already drops those messages, but
+      // this path is too sensitive to rely on that check alone.
+      if (!reinjected && session->config.controlProtocolType == 13) {
+        BOOST_LOG(error) << "Dropping unencrypted microphone data on encrypted control stream"sv;
+        return;
+      }
+
+      if (!session->config.enableMic || !audio::is_mic_enabled()) {
+        BOOST_LOG(debug) << "Microphone passthrough was not negotiated by [" << session->device_name << "]";
+        return;
+      }
+
+      if (payload.size() <= sizeof(std::uint32_t)) {
+        BOOST_LOG(warning) << "Microphone: Runt packet"sv;
+        return;
+      }
+
+      auto sequence_number = util::endian::big(*(std::uint32_t *) payload.data());
+      auto opus = payload.substr(sizeof(sequence_number));
+
+      session->mic_packets->raise(audio::mic_packet_t {sequence_number, std::vector<std::uint8_t>(std::begin(opus), std::end(opus))});
     });
 
     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
@@ -1941,6 +1992,13 @@ namespace stream {
     audio::capture(session->mail, session->config.audio, session);
   }
 
+  void micThread(session_t *session) {
+    while_starting_do_nothing(session->state);
+
+    BOOST_LOG(debug) << "Start playing back Microphone"sv;
+    audio::mic_passthrough(session->mail);
+  }
+
   namespace session {
     std::atomic_uint running_sessions;
 
@@ -2041,6 +2099,10 @@ namespace stream {
       session.videoThread.join();
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
+      if (session.micThread.joinable()) {
+        BOOST_LOG(debug) << "Waiting for microphone to end..."sv;
+        session.micThread.join();
+      }
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
@@ -2115,6 +2177,11 @@ namespace stream {
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};
 
+      // Nothing will ever be raised on the microphone queue unless both ends agreed to it
+      if (session.config.enableMic && audio::is_mic_enabled()) {
+        session.micThread = std::thread {micThread, &session};
+      }
+
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
       // If this is the first session, invoke the platform callbacks
@@ -2160,6 +2227,8 @@ namespace stream {
       session->undo_cmds = std::move(launch_session.client_undo_cmds);
 
       session->config = config;
+
+      session->mic_packets = mail->queue<audio::mic_packet_t>(mail::mic_packets);
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

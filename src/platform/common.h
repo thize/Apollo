@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <atomic>
 #include <bitset>
 #include <filesystem>
 #include <functional>
@@ -552,11 +553,54 @@ namespace platf {
     virtual ~mic_t() = default;
   };
 
+  /**
+   * @brief A sink that feeds audio into a virtual microphone device of the host.
+   */
+  class mic_sink_t {
+  public:
+    /**
+     * @brief Write samples to the virtual microphone.
+     * The call never blocks, so it may accept fewer frames than requested when the
+     * device hasn't consumed the previously written ones yet.
+     * @param samples Interleaved 32-bit float samples, or `nullptr` to write silence.
+     * @param frame_count The number of frames (samples per channel) to write.
+     * @return The number of frames written, or a negative value on error.
+     */
+    virtual int write(const float *samples, int frame_count) = 0;
+
+    virtual ~mic_sink_t() = default;
+  };
+
+  /**
+   * @brief Status of the virtual microphone driver used for microphone passthrough.
+   */
+  enum class mic_driver_status_e : int {
+    unsupported,  ///< This platform doesn't implement microphone passthrough
+    not_found,  ///< No virtual microphone is present on this system
+    ok  ///< A virtual microphone is present and ready to accept audio
+  };
+
+  /**
+   * @brief Status of the virtual microphone driver, determined during platform initialization.
+   * @note Platforms without microphone passthrough support leave this at `unsupported`.
+   */
+  inline std::atomic<mic_driver_status_e> mic_driver_status {mic_driver_status_e::unsupported};
+
   class audio_control_t {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) = 0;
+
+    /**
+     * @brief Create a sink that renders audio into the host's virtual microphone.
+     * @param sample_rate The sample rate of the samples passed to mic_sink_t::write().
+     * @param channels The channel count of the samples passed to mic_sink_t::write().
+     * @return A mic_sink_t instance, or `nullptr` if no virtual microphone is available.
+     */
+    virtual std::unique_ptr<mic_sink_t> mic_sink(std::uint32_t sample_rate, int channels) {
+      return nullptr;
+    }
 
     /**
      * @brief Check if the audio sink is available in the system.

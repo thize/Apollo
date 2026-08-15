@@ -316,7 +316,7 @@
     "mic_driver_status_desc": "A passagem de microfone precisa de um dispositivo de microfone virtual neste servidor. Mantenha a instalação do driver ativada ou aponte a Saída de Microfone para um microfone virtual que você já tenha.",
     "mic_sink": "Saída de Microfone",
     "mic_sink_desc": "O dispositivo de áudio em que o áudio do microfone vindo do cliente é reproduzido. O lado de captura desse dispositivo é o que os aplicativos do servidor enxergam como microfone.\nSe não for definido, o dispositivo é escolhido automaticamente.\nRecomendamos fortemente deixar este campo em branco para usar a seleção automática de dispositivo!",
-    "mic_sink_placeholder": "Steam Streaming Microphone",
+    "mic_sink_placeholder": "CABLE Input (VB-Audio Virtual Cable)",
     "min_fps_factor": "Fator mínimo de FPS",
     "min_fps_factor_desc": "O Apollo usará esse fator para calcular o tempo mínimo entre os quadros. Aumentar um pouco esse valor pode ajudar na transmissão de conteúdo predominantemente estático. Valores mais altos consumirão mais largura de banda.",
     "min_threads": "Quantidade mínima de threads da CPU",

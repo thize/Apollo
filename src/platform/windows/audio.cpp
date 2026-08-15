@@ -41,21 +41,16 @@ namespace {
   constexpr auto SAMPLE_RATE = 48000;
   constexpr auto STEAM_AUDIO_DRIVER_PATH = L"%CommonProgramFiles(x86)%\\Steam\\drivers\\Windows10\\" STEAM_DRIVER_SUBDIR L"\\SteamStreamingSpeakers.inf";
 
-  // The Virtual Audio Driver (https://github.com/VirtualDrivers/Virtual-Audio-Driver, MIT).
-  // The INF name and the device description below are taken verbatim from the driver's
-  // Source/Main/VirtualAudioDriver.inx as of tag 25.7.14: the [Manufacturer] section installs
-  // ROOT\VirtualAudioDriver as %VIRTUALAUDIODRIVER_SA.DeviceDesc%, which [Strings] defines as
-  // "Virtual Audio Driver by MTT".
+  // VB-CABLE (https://vb-audio.com/Cable, VB-Audio Software) routes everything rendered to its
+  // input endpoint straight to its capture endpoint, which is exactly what we need to make the
+  // client's microphone show up as a regular recording device on this machine.
   //
-  // FIXME: this driver does not route its render endpoint to its capture endpoint. The INF
-  // registers two separate filters (WaveSpeaker with KSCATEGORY_RENDER, WaveMicArray1 with
-  // KSCATEGORY_CAPTURE), and the capture path in Source/Main/minwavertstream.cpp zeroes its
-  // buffer rather than reading what was rendered. Writing here produces silence on the capture
-  // side, and matching it ahead of the Steam device means we never fall through to one that
-  // does work. Only Steam Streaming Microphone, whose INF puts both categories on a single
-  // filter, has the loopback property this feature needs.
-  constexpr auto VIRTUAL_AUDIO_DRIVER_PATH = L"third-party\\virtual-audio-driver\\VirtualAudioDriver.inf";
-  constexpr auto VIRTUAL_AUDIO_DRIVER_NAME = L"Virtual Audio Driver by MTT";
+  // The device is matched by its endpoint description rather than by its adapter name, because
+  // the driver exposes two render endpoints ("CABLE Input" and "CABLE In 16ch") that share the
+  // adapter name "VB-Audio Virtual Cable". Only "CABLE Input" is the one paired with the
+  // "CABLE Output" recording device that applications will pick.
+  constexpr auto VB_CABLE_DRIVER_PATH = L"third-party\\vb-cable\\vbMmeCable64_win10.inf";
+  constexpr auto VB_CABLE_ENDPOINT_NAME = L"CABLE Input";
 
   // Steam Streaming Microphone is used as an opportunistic fallback when it happens to be
   // installed. Its device description comes from SteamStreamingMicrophone.inf, the same way
@@ -225,16 +220,16 @@ namespace {
   }
 
   /**
-   * @brief Get the path of the Virtual Audio Driver INF file shipped with Sunshine.
+   * @brief Get the path of the VB-CABLE INF file shipped with Sunshine.
    * @return The absolute path of the INF file, or an empty string if it couldn't be determined.
    */
-  std::wstring virtual_audio_driver_path() {
+  std::wstring vb_cable_driver_path() {
     WCHAR module_path[MAX_PATH];
     if (!GetModuleFileNameW(nullptr, module_path, ARRAYSIZE(module_path))) {
       return {};
     }
 
-    return (std::filesystem::path {module_path}.remove_filename() / VIRTUAL_AUDIO_DRIVER_PATH).wstring();
+    return (std::filesystem::path {module_path}.remove_filename() / VB_CABLE_DRIVER_PATH).wstring();
   }
 
 }  // namespace
@@ -1122,9 +1117,9 @@ namespace platf::audio {
       };
     }
 
-    audio_control_t::match_fields_list_t match_virtual_audio_driver() {
+    audio_control_t::match_fields_list_t match_vb_cable() {
       return {
-        {match_field_e::adapter_friendly_name, VIRTUAL_AUDIO_DRIVER_NAME}
+        {match_field_e::device_description, VB_CABLE_ENDPOINT_NAME}
       };
     }
 
@@ -1221,7 +1216,7 @@ namespace platf::audio {
 
     /**
      * @brief Search for the render endpoint that microphone audio should be written to.
-     * The user-configured sink wins, followed by the Virtual Audio Driver we ship ourselves
+     * The user-configured sink wins, followed by the VB-CABLE device we ship ourselves
      * and finally the Steam Streaming Microphone, if the user happens to have it installed.
      * @return Optional device_id of the virtual microphone
      */
@@ -1235,7 +1230,7 @@ namespace platf::audio {
         BOOST_LOG(warning) << "Couldn't find the specified microphone sink " << config::audio.mic_sink;
       }
 
-      for (const auto &match_list : {match_virtual_audio_driver(), match_steam_microphone()}) {
+      for (const auto &match_list : {match_vb_cable(), match_steam_microphone()}) {
         auto matched = find_device_id(match_list);
         if (matched) {
           return matched->second;
@@ -1392,20 +1387,20 @@ namespace platf::audio {
     }
 
     /**
-     * @brief Installs the Virtual Audio Driver bundled with Sunshine.
+     * @brief Installs the VB-CABLE driver bundled with Sunshine.
      * @return `true` if installation was successful.
      */
-    bool install_virtual_audio_driver() {
-      auto driver_path = virtual_audio_driver_path();
+    bool install_vb_cable() {
+      auto driver_path = vb_cable_driver_path();
       if (driver_path.empty()) {
-        BOOST_LOG(error) << "Couldn't determine the location of the Virtual Audio Driver"sv;
+        BOOST_LOG(error) << "Couldn't determine the location of VB-CABLE"sv;
         return false;
       }
 
       return install_audio_driver(
         driver_path.c_str(),
-        "Virtual Audio Driver"sv,
-        "Virtual Audio Driver files not found. Microphone passthrough will need another virtual microphone."sv
+        "VB-CABLE"sv,
+        "VB-CABLE files not found. Microphone passthrough will need another virtual microphone."sv
       );
     }
 
@@ -1413,10 +1408,10 @@ namespace platf::audio {
      * @brief Installs the virtual microphone if needed and records whether one is usable.
      */
     void init_mic_driver() {
-      if (config::audio.install_mic_driver && !find_device_id(match_virtual_audio_driver())) {
+      if (config::audio.install_mic_driver && !find_device_id(match_vb_cable())) {
         // This is best effort. Don't fail if it doesn't work, the user may have
         // configured another virtual microphone to write to.
-        install_virtual_audio_driver();
+        install_vb_cable();
       }
 
       auto device_id = find_mic_sink_device_id();

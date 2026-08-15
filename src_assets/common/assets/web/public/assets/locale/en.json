@@ -352,7 +352,7 @@
     "mic_driver_status_desc": "Microphone passthrough needs a virtual microphone device on this host. Keep the driver installation enabled, or point Microphone Sink at a virtual microphone you already have.",
     "mic_sink": "Microphone Sink",
     "mic_sink_desc": "The audio device that microphone audio coming from the client is played back to. The capture side of that device is what applications on the host see as a microphone.\nIf unset, the device is chosen automatically.\nWe strongly recommend leaving this field blank to use automatic device selection!",
-    "mic_sink_placeholder": "Steam Streaming Microphone",
+    "mic_sink_placeholder": "CABLE Input (VB-Audio Virtual Cable)",
     "minimum_fps_target": "Minimum FPS Target",
     "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. Set 0 for automatic.",
     "min_threads": "Minimum CPU Thread Count",

@@ -525,7 +525,7 @@ namespace config {
     true,  // install_steam_drivers
     true, // keep_sink_default
     true, // auto_capture
-    false,  // enable_mic
+    true,  // enable_mic
     {},  // mic_sink
     true,  // install_mic_driver
   };

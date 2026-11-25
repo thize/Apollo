@@ -114,7 +114,7 @@ const validateFallbackMode = (event) => {
                   id="enable_mic"
                   locale-prefix="config"
                   v-model="config.enable_mic"
-                  default="false"
+                  default="true"
         ></Checkbox>
 
         <!-- Microphone Sink -->
